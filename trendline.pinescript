@@ -1,0 +1,172 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © YongweiZ
+
+//@version=5
+strategy("trendline", overlay=true, initial_capital = 200, default_qty_type=strategy.percent_of_equity, default_qty_value=100, commission_value=0.04)
+
+// === /INPUTS ===
+fromDay = input.int(defval = 1, title = "From Day", minval = 1, maxval = 31)
+fromMonth = input.int(defval = 1, title = "From Month", minval = 1, maxval = 12)
+fromYear = input.int(defval = 2022, title = "From Year", minval = 1970)
+ //monday and session 
+// To Date Inputs
+toDay = input.int(defval = 31, title = "To Day", minval = 1, maxval = 31)
+toMonth = input.int(defval = 12, title = "To Month", minval = 1, maxval = 12)
+toYear = input.int(defval = 2023, title = "To Year", minval = 1970)
+
+startDate = timestamp(fromYear, fromMonth, fromDay, 00, 00)
+finishDate = timestamp(toYear, toMonth, toDay, 00, 00)
+time_cond = time >= startDate and time <= finishDate 
+
+timeinrange(res, sess) => time(res, sess) != 0
+
+measure(_type, _src, _lbl) =>
+    float result = 0
+    if _type=="Value"                                           //Average value over lookback
+        result := _src
+    if _type=="SMA"                                             //Average value over lookback
+        result := ta.sma(_src,_lbl)
+    if _type=="Change"                                          //Average difference (1-bar) over lookback
+        result := ta.sma(ta.change(_src),_lbl)
+    if _type=="Momentum"                                        //Average difference (lookback bars) over lookback
+        result := ta.sma(ta.change(_src,_lbl),_lbl)
+    if _type=="Acceleration"                                    //Average Change of the Change over lookback, average acceleration 
+        result := ta.sma(ta.change(ta.change(_src,_lbl),_lbl),_lbl)
+    if _type=="Contribution"                                    //Today ratiod to total over lookback, how much did this bar contirbute to the total
+        result := _src/math.sum(_src,_lbl)
+    if _type=="%-Change"                                        //Percent Change over lookback
+        result := ta.sma(ta.change(_src)/nz(_src[_lbl],_src),_lbl)
+    if _type=="Volatility"                                      //Natural Log Volatility adjusted
+        Vaa = math.log(_src/nz(_src[1],_src))
+        Vam = ta.sma(Vaa,_lbl)
+        result := math.sqrt(math.sum(math.pow(Vaa-Vam,2),_lbl)/_lbl)
+    result
+
+//Returns the normal distribution CDF
+n_CDF(_src,_len,_smo) =>
+    x_bar = ta.sma(_src,_len) //mean
+    s = math.sqrt(math.sum(math.pow(_src - x_bar,2),_len)/(_len-1))
+    z_bar = math.max(math.min((_src - x_bar)/s,5.55),-5.55)
+    CDF = ta.sma((1/(1+math.pow((1-z_bar/5.555),(1/0.1186)))),_smo)
+    
+//Returns the Burn, Bernoulli calc
+bern(_src,_avg,_len,_xn) =>
+    _r2 = math.min(math.max(ta.percentrank(_src,_avg)/100,0.001),0.999)
+    burn = math.sum(((_xn?-1:1)*_r2*math.log(_r2)/math.log(2)) - (1-_r2)*math.log(1-_r2)/math.log(2),_len)
+    
+
+src = close
+len = input(22, title="Entropy Length")
+range1 = input(0.67, title="Trade Band - confirmation")
+avg = input(88, title="Averaging Length")
+type = input.session("Contribution", "Measurement Type", options = ["Value", "SMA", "Change", "%-Change", "Momentum", "Acceleration", "Contribution", "Volatility"])
+
+vPR = input(5, title="Percent Rank Limit")
+bc = input(true, title="Include Source")
+vc = input(true, title="Include Volume")
+pb = input(true, title="Print Bands")
+xc = input(false, title="Extra Highlighting")
+xn = input(false, title="Bernoulli Purest")
+
+smo = input.int(3, title="Probability Smoother",minval=1)
+
+//Entropy Calculation, Bernoulli Process source (close) or for Volume or both
+cr = measure(type,src,len)
+vr = measure(type,math.log(volume),len)
+cr2 = xn?n_CDF(cr,len,smo):cr
+vr2 = xn?n_CDF(vr,len,smo):vr
+infoc = bc?bern(cr2,avg,len,xn):0
+infov = vc?bern(vr2,avg,len,xn):0
+info2 = (bc and vc) ? (infoc - infov): xn ? (0 + (infoc + infov)/(-len + 1)):(infoc + infov)
+
+hvp = ta.percentrank(info2,avg)
+
+//RSI
+src1 = input(close,title="CCI Source")
+rsiLen  = input(14,title="RSI length")
+rsiUpper= input(70,title="RSI Upper limit")
+rsiLower= input(30,title="RSI Lower Limit")
+rsiVal = ta.rsi(src1,rsiLen)
+//-----------------MA50-----------------------------------------
+m1_src = close
+m1_p = input(50, title="MA1 Period:")
+plot(ta.sma(m1_src, m1_p), color=color.yellow, linewidth=3, title="MA1")
+yellowLine = ta.sma(m1_src, m1_p)
+//
+periods=input(21, title="MA Period")
+redLine = math.avg(ta.sma(high,periods)+2.5*(ta.sma(high,periods)-ta.sma(low,periods)),ta.sma(low,periods)-2.5*(ta.sma(high,periods)-ta.sma(low,periods)))
+plot(math.avg(ta.sma(high,periods)+2.5*(ta.sma(high,periods)-ta.sma(low,periods)),ta.sma(low,periods)-2.5*(ta.sma(high,periods)-ta.sma(low,periods))), color=color.red, style=plot.style_line,linewidth=4)
+var flag = 0
+if infoc[1] < -infov[1] and infoc > -infov
+    flag :=1
+if infoc[1] > -infov[1] and infoc < -infov
+    flag :=1
+noiseClear =  (low[3] < redLine and high[3] > redLine) and (low[2] < redLine and high[2] > redLine) and (low < redLine and high > redLine) ? 0 : 1
+//plot(infoc,title= "info",color = color.new(color.red,20))
+//plot(-infov,title= "info",color = color.new(color.purple,20))
+//入场条件
+rsiFilter = (rsiVal > 60 or rsiVal < 40) ? 1 : 0
+//longCondition = infoc > -infov and rsiFilter and close>redLine and low < redLine
+//shortCondition = infoc < -infov and rsiFilter and close<redLine and high  > redLine
+longCondition = flag and rsiFilter and close>redLine and low < redLine and redLine > yellowLine and noiseClear
+shortCondition = flag and rsiFilter and close<redLine and high  > redLine and redLine < yellowLine and noiseClear
+ 
+//分批止盈止损+移动止损线
+stopP=input(1,title = '止损幅度')/100
+takeP=input(2,title = '止盈幅度')/100
+tpVar=input(0.5,title = "分批止盈间隔")/100
+stopForce=input(3,title = "强制止损幅度")/100
+var stop=0.0
+var stop2=0.0
+var take1=0.0
+var take2=0.0
+
+//多仓
+if longCondition and strategy.position_size==0 and time_cond
+    strategy.cancel_all()
+    strategy.order('long',strategy.long,limit = close)
+    //strategy.entry('long',strategy.long)
+    flag:=0
+    stop:=close*(1-stopP)
+    stop2:=close*(1-stopForce)
+    take1:=close*(1+takeP-tpVar)
+    take2:=close*(1+takeP+tpVar)
+
+if strategy.position_size>0 and close<stop and time_cond
+    strategy.close('long')
+
+if strategy.position_size>0 and high>take1 and time_cond
+    stop:=strategy.position_avg_price*1.003
+    stop2:=strategy.position_avg_price*0.99
+
+//空仓
+if shortCondition and strategy.position_size==0 and time_cond
+    strategy.cancel_all()
+    flag:=0
+    strategy.order('short',strategy.short,limit = close)
+    //strategy.entry('long',strategy.long)
+    stop:=close*(1+stopP)
+    stop2:=close*(1+stopForce)
+    take1:=close*(1-takeP+tpVar)
+    take2:=close*(1-takeP-tpVar)
+//多仓移动止损+强制止损
+if strategy.position_size>0 and close<stop and time_cond
+    strategy.close('long')
+if strategy.position_size>0 and high>take1 and time_cond
+    stop:=strategy.position_avg_price*1.003
+    stop2:=strategy.position_avg_price*(1-stopForce*0.25)
+//空仓移动止损+强制止损
+if strategy.position_size<0 and close>stop and time_cond
+    strategy.close('short')
+if strategy.position_size<0 and high<take1 and time_cond
+    stop:=strategy.position_avg_price*0.997
+    stop2:=strategy.position_avg_price*(1+stopForce*0.25)
+
+strategy.exit('longtake1','long',stop = stop2, limit=take1,qty_percent = 80)
+strategy.exit('longtake2','long',stop = stop2, limit=take2)
+
+strategy.exit('shorttake1','short',stop = stop2, limit=take1,qty_percent = 80)
+strategy.exit('shorttake2','short',stop = stop2, limit=take2)
+//color1=close>ema1?color.green:color.red
+//color2=close>ema2?color.green:color.red
+plot(stop)
